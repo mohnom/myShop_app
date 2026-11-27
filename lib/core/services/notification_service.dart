@@ -1,11 +1,12 @@
 import 'dart:convert';
+import 'package:entrig/entrig.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:myshop/core/routes/router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// خدمة الإشعارات المحلية + FCM
+/// خدمة الإشعارات المحلية + FCM + Entrig في الواجهة والخلفية
 class NotificationService {
   NotificationService._();
   static final NotificationService _instance = NotificationService._();
@@ -60,8 +61,37 @@ class NotificationService {
       await androidImplementation?.requestNotificationsPermission();
     }
 
+    // الاستماع لرسائل FCM أثناء فتح التطبيق
     FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
+
+    // عند النقر على إشعار FCM والتطبيق في الخلفية
     FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpenedApp);
+
+    // عند النقر على إشعار FCM والتطبيق مغلق تماماً (Terminated Cold Start)
+    FirebaseMessaging.instance.getInitialMessage().then((initialMessage) {
+      if (initialMessage != null) {
+        Future.delayed(const Duration(milliseconds: 800), () {
+          _handleMessageOpenedApp(initialMessage);
+        });
+      }
+    });
+
+    // عند النقر على إشعار قادم من Entrig في الخلفية
+    try {
+      Entrig.onNotificationOpened.listen((event) {
+        final rawId =
+            event.data?['ID_Conect'] ??
+            event.data?['conect_id'] ??
+            event.data?['connect_id'];
+        final conectId = int.tryParse(rawId?.toString() ?? '');
+        if (conectId != null && conectId > 0) {
+          router.push(
+            '/detailsItemsView',
+            extra: {'conectId': conectId, 'merchantName': 'تفاصيل الحساب'},
+          );
+        }
+      });
+    } catch (_) {}
 
     _isInitialized = true;
   }

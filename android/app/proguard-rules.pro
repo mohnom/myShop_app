@@ -10,11 +10,14 @@
 -keep class * extends com.google.gson.reflect.TypeToken
 -keepattributes Signature, InnerClasses, EnclosingMethod, RuntimeVisibleAnnotations
 
+# Entrig Push SDK (keep background FirebaseMessagingService & payload models)
+-keep class com.entrig.** { *; }
+-dontwarn com.entrig.**
+
 # Firebase & Google Play Services
 -dontwarn com.google.firebase.**
 -dontwarn com.google.android.gms.**
 
-# Audioplayers & Entrig
--dontwarn com.entrig.**
+# Audioplayers
 -dontwarn java.awt.**
 -dontwarn org.slf4j.**

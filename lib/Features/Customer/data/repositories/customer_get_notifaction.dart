@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'package:entrig/entrig.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 StreamSubscription<String>? _fcmTokenRefreshSubscription;
 
-/// حفظ FCM Token وتسجيل العميل في Entrig و Supabase
+/// حفظ FCM Token وتسجيل العميل في Entrig و Supabase لضمان وصول إشعارات الخلفية
 Future<void> saveCustomerDeviceToken() async {
   if (kIsWeb) return;
   try {
@@ -15,12 +16,7 @@ Future<void> saveCustomerDeviceToken() async {
     final userId = supabase.auth.currentUser?.id;
     if (userId == null) return;
 
-    try {
-      await Entrig.register(userId: userId);
-    } catch (e) {
-      debugPrint('Entrig register warning: $e');
-    }
-
+    // 1. طلب صلاحية الإشعارات أولاً مرة واحدة بشكل منظم
     try {
       await Permission.notification.request();
     } catch (_) {}
@@ -32,6 +28,16 @@ Future<void> saveCustomerDeviceToken() async {
       sound: true,
     );
 
+    // 2. تسجيل الجهاز في Entrig بعد التأكد من جاهزية Activity الأندرويد
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await Entrig.register(userId: userId);
+      } catch (e) {
+        debugPrint('Entrig register warning: $e');
+      }
+    });
+
+    // 3. حفظ وتحديث FCM Token في جدول user_devices لاستخدامه من الدالة السحابية
     if (settings.authorizationStatus == AuthorizationStatus.authorized ||
         settings.authorizationStatus == AuthorizationStatus.provisional) {
       // ignore: deprecated_member_use

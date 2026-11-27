@@ -1,8 +1,7 @@
 // supabase/functions/send-notification/index.ts
-// Supabase Edge Function — إرسال إشعار FCM للزبون بعد التحقق من جلسة المرسل (JWT)
+// Supabase Edge Function — إرسال إشعار FCM فوري للزبون حتى والتطبيق مغلق تماماً (Background / Killed)
 
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 interface NotificationPayload {
   token: string;
@@ -11,7 +10,9 @@ interface NotificationPayload {
   data?: Record<string, string>;
 }
 
-async function getAccessToken(serviceAccount: Record<string, string>): Promise<string> {
+async function getAccessToken(
+  serviceAccount: Record<string, string>
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
   const payload = {
@@ -34,7 +35,9 @@ async function getAccessToken(serviceAccount: Record<string, string>): Promise<s
   const payloadB64 = base64url(encoder.encode(JSON.stringify(payload)));
   const unsignedToken = `${headerB64}.${payloadB64}`;
 
-  const pemContents = serviceAccount.private_key
+  // معالجة علامات السطر الجديد سواء كانت نصية أو مهربة (\\n) عند اللصق في Supabase Secrets
+  const normalizedPem = serviceAccount.private_key.replace(/\\n/g, "\n");
+  const pemContents = normalizedPem
     .replace("-----BEGIN PRIVATE KEY-----", "")
     .replace("-----END PRIVATE KEY-----", "")
     .replace(/\s/g, "");
@@ -66,7 +69,7 @@ async function getAccessToken(serviceAccount: Record<string, string>): Promise<s
   return tokenData.access_token;
 }
 
-serve(async (req) => {
+Deno.serve(async (req: Request) => {
   try {
     if (req.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -78,7 +81,6 @@ serve(async (req) => {
       });
     }
 
-    // التحقق من مصادقة المرسل (يجب أن يكون مستخدماً مسجلاً)
     const authHeader = req.headers.get("Authorization");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
@@ -105,7 +107,8 @@ serve(async (req) => {
       });
     }
 
-    const { token, title, body, data } = (await req.json()) as NotificationPayload;
+    const { token, title, body, data } =
+      (await req.json()) as NotificationPayload;
 
     if (!token || !title) {
       return new Response(
@@ -119,7 +122,7 @@ serve(async (req) => {
 
     if (!serviceAccountJson || !projectId) {
       return new Response(
-        JSON.stringify({ error: "Server configuration error" }),
+        JSON.stringify({ error: "Missing Firebase secrets on Supabase" }),
         { status: 500, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -127,6 +130,7 @@ serve(async (req) => {
     const serviceAccount = JSON.parse(serviceAccountJson);
     const accessToken = await getAccessToken(serviceAccount);
 
+    // إرسال إشعار FCM عالي الأولوية يوقظ الهاتف من وضع السكون (Doze Mode) ويُخزّن حتى 24 ساعة في حال انقطاع الإنترنت
     const fcmResponse = await fetch(
       `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`,
       {
@@ -142,9 +146,14 @@ serve(async (req) => {
             data: data || {},
             android: {
               priority: "high",
+              ttl: "86400s",
               notification: {
                 channel_id: "myshop_sales_channel",
                 sound: "default",
+                notification_priority: "PRIORITY_MAX",
+                visibility: "PUBLIC",
+                default_sound: true,
+                default_vibrate_timings: true,
               },
             },
           },
@@ -155,7 +164,7 @@ serve(async (req) => {
     const fcmResult = await fcmResponse.json();
     if (!fcmResponse.ok) {
       return new Response(
-        JSON.stringify({ error: "FCM send failed" }),
+        JSON.stringify({ error: "FCM send failed", details: fcmResult }),
         { status: 502, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -170,9 +179,9 @@ serve(async (req) => {
         },
       }
     );
-  } catch (_) {
+  } catch (err) {
     return new Response(
-      JSON.stringify({ error: "Internal server error" }),
+      JSON.stringify({ error: String(err) }),
       { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }

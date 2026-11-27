@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:entrig/entrig.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:myshop/add_provider.dart';
 import 'package:myshop/core/routes/router.dart';
@@ -11,28 +13,75 @@ import 'package:myshop/core/services/notification_service.dart';
 import 'package:myshop/core/utils/app_config.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+/// معالج رسائل الخلفية عند إغلاق التطبيق بالكامل (Terminated / Background)
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
+
+  // إذا كانت الرسالة تحتوي على حقل notification، يعرضها نظام أندرويد تلقائياً عبر قناة myshop_sales_channel.
+  // أما إذا كانت الرسالة Data-only، نقوم بعرضها محلياً هنا لضمان ظهورها دائماً في الخلفية:
+  if (message.notification == null && message.data.isNotEmpty) {
+    String? title = message.data['title']?.toString();
+    String? body = message.data['body']?.toString();
+
+    if (title == null && message.data['payload'] != null) {
+      try {
+        final decoded =
+            jsonDecode(message.data['payload'].toString())
+                as Map<String, dynamic>;
+        title = decoded['title']?.toString();
+        body = decoded['body']?.toString();
+      } catch (_) {}
+    }
+
+    if (title != null && title.isNotEmpty) {
+      final plugin = FlutterLocalNotificationsPlugin();
+      const androidInit = AndroidInitializationSettings(
+        '@drawable/ic_stat_notify',
+      );
+      await plugin.initialize(
+        settings: const InitializationSettings(android: androidInit),
+      );
+
+      const channel = AndroidNotificationChannel(
+        'myshop_sales_channel',
+        'إشعارات المبيعات والدفعات',
+        description: 'إشعارات عمليات البيع والتسديد الجديدة',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+      );
+      await plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.createNotificationChannel(channel);
+
+      await plugin.show(
+        id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        title: title,
+        body: body ?? '',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'myshop_sales_channel',
+            'إشعارات المبيعات والدفعات',
+            importance: Importance.max,
+            priority: Priority.high,
+            playSound: true,
+            enableVibration: true,
+            icon: '@drawable/ic_stat_notify',
+          ),
+        ),
+      );
+    }
+  }
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // تهيئة Entrig بأمان دون تعطيل الإقلاع في حال غياب المفتاح أو ضعف الشبكة
-  final entrigKey = AppConfig.entrigApiKey;
-  if (entrigKey.isNotEmpty && !entrigKey.startsWith('YOUR_')) {
-    try {
-      await Entrig.init(
-        apiKey: entrigKey,
-        showForegroundNotification: true,
-      );
-    } catch (e) {
-      debugPrint('Entrig init warning: $e');
-    }
-  }
-
-  // تهيئة Firebase وخلفية الرسائل
+  // تهيئة Firebase وتسجيل معالج الخلفية أولاً
   try {
     await Firebase.initializeApp();
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
@@ -40,7 +89,21 @@ Future<void> main() async {
     debugPrint('Firebase init warning: $e');
   }
 
-  // تهيئة خدمة الإشعارات المحلية
+  // تهيئة Entrig لإشعارات الخلفية
+  final entrigKey = AppConfig.entrigApiKey;
+  if (entrigKey.isNotEmpty && !entrigKey.startsWith('YOUR_')) {
+    try {
+      await Entrig.init(
+        apiKey: entrigKey,
+        handlePermission: false,
+        showForegroundNotification: true,
+      );
+    } catch (e) {
+      debugPrint('Entrig init warning: $e');
+    }
+  }
+
+  // تهيئة خدمة الإشعارات المحلية وقناة الأندرويد عالية الأولوية
   await NotificationService.instance.initialize();
 
   // تهيئة Supabase
@@ -73,7 +136,6 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
-    // الاستماع لحدث استعادة كلمة المرور عبر الرابط العميق (Deep Link)
     try {
       _authSubscription = Supabase.instance.client.auth.onAuthStateChange
           .listen((data) {
